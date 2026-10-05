@@ -432,7 +432,8 @@ async def main():
 
     source = normalize_source(TELEGRAM_SOURCE)
 
-    print("[startup] Melook FB Forwarder v3 - FEED + attached_media")\n    print(f"[startup] Telegram source: @{source}")
+    print("[startup] Melook FB Forwarder v3.1 - FEED + attached_media")
+    print(f"[startup] Telegram source: @{source}")
     print(f"[startup] Meta Graph version: {META_GRAPH_VERSION}")
     print(f"[startup] State file: {STATE_FILE}")
     print(f"[startup] Facebook enabled: {FACEBOOK_ENABLED}")
