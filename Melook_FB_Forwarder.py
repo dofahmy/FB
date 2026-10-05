@@ -306,15 +306,37 @@ def publish_text(message: str):
 
 
 def publish_photo_file(message: str, image_path: str):
+    """
+    Publish as a real Page feed post:
+      1) Upload photo as unpublished media.
+      2) Create /feed post with message + attached_media.
+
+    This keeps the text as the feed post message instead of relying only on
+    a photo caption.
+    """
+    # Step 1: upload photo without publishing it as a standalone photo post.
     with open(image_path, "rb") as f:
-        return meta_request(
+        uploaded = meta_request(
             f"{FACEBOOK_PAGE_ID}/photos",
-            data={
-                "message": message,
-                "published": "true",
-            },
+            data={"published": "false"},
             files={"source": f},
         )
+
+    media_fbid = uploaded.get("id")
+    if not media_fbid:
+        raise RuntimeError(f"Meta photo upload returned no media id: {uploaded}")
+
+    # Step 2: create the actual feed post with the text and uploaded photo.
+    payload = {
+        "message": message or "",
+        "attached_media[0]": json.dumps({"media_fbid": media_fbid}),
+    }
+    result = meta_request(
+        f"{FACEBOOK_PAGE_ID}/feed",
+        data=payload,
+    )
+    print(f"[fb] feed post created with attached_media={media_fbid}")
+    return result
 
 
 # =========================
@@ -410,7 +432,7 @@ async def main():
 
     source = normalize_source(TELEGRAM_SOURCE)
 
-    print(f"[startup] Telegram source: @{source}")
+    print("[startup] Melook FB Forwarder v3 - FEED + attached_media")\n    print(f"[startup] Telegram source: @{source}")
     print(f"[startup] Meta Graph version: {META_GRAPH_VERSION}")
     print(f"[startup] State file: {STATE_FILE}")
     print(f"[startup] Facebook enabled: {FACEBOOK_ENABLED}")
