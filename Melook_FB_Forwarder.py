@@ -304,7 +304,15 @@ async def main():
         TELEGRAM_API_HASH,
     )
 
-    await client.start()
+    # Railway is non-interactive: do not let Telethon prompt for a phone number.
+    await client.connect()
+    if not await client.is_user_authorized():
+        await client.disconnect()
+        raise RuntimeError(
+            "Telegram session is not authorized. Generate a NEW StringSession "
+            "locally and update TELEGRAM_SESSION_STRING in Railway Variables. "
+            "Do not paste your session in logs or chat."
+        )
     me = await client.get_me()
     print(
         "[telegram] Logged in as: "

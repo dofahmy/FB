@@ -2,8 +2,8 @@ import os
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-API_ID = os.getenv("38880809", "").strip()
-API_HASH = os.getenv("9659d4cfc3b7c3476089fb218f57e0fc", "").strip()
+API_ID = os.getenv("TELEGRAM_API_ID", "").strip()
+API_HASH = os.getenv("TELEGRAM_API_HASH", "").strip()
 
 if not API_ID or not API_HASH:
     raise RuntimeError("Set TELEGRAM_API_ID and TELEGRAM_API_HASH first.")
