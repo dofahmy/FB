@@ -3,15 +3,13 @@ import re
 import json
 import asyncio
 import tempfile
-import time
+import html
 from pathlib import Path
-from urllib.parse import urlsplit, urlencode
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
 import requests
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-
-from egypt_offer_shortener import request_short_url
 
 
 def env_bool(name: str, default: bool) -> bool:
@@ -45,9 +43,8 @@ STATE_FILE = os.getenv(
 ).strip()
 
 URL_RE = re.compile(r'https?://[^\s<>"\']+', re.I)
-ASIN_RE = re.compile(r'/(?:dp|gp/product)/([A-Z0-9]{10})(?:[/?]|$)', re.I)
-
-_LAST_LINK_MS = 0
+AMAZON_HOSTS = {"amazon.eg", "www.amazon.eg"}
+AMAZON_SHORT_HOSTS = {"amzn.to", "www.amzn.to", "a.co", "www.a.co"}
 
 
 def normalize_source(source: str) -> str:
@@ -69,8 +66,6 @@ def require_env():
 
     if REWRITE_AMAZON_LINKS:
         required["FACEBOOK_AMAZON_TAG"] = FACEBOOK_AMAZON_TAG
-        required["EGYPT_SHORT_BASE_URL"] = os.getenv("EGYPT_SHORT_BASE_URL", "").strip()
-        required["EGYPT_SHORT_API_KEY"] = os.getenv("EGYPT_SHORT_API_KEY", "").strip()
 
     missing = [k for k, v in required.items() if not v]
     if missing:
@@ -95,94 +90,56 @@ def save_state(state):
     tmp.replace(path)
 
 
-def _amazon_product_link(asin: str, tag: str) -> str:
-    global _LAST_LINK_MS
-    asin = str(asin).strip().upper()
-    now_ms = int(time.time() * 1000)
-    _LAST_LINK_MS = max(now_ms, _LAST_LINK_MS + 1)
-
-    fields = {
-        "ref": "t_ac_spc_accepted_tile",
-        "linkCode": "tr1",
-        "tag": tag,
-        "linkId": f"{asin}_{_LAST_LINK_MS}",
-    }
-    return f"https://www.amazon.eg/dp/{asin}?{urlencode(fields)}"
-
-
-def _extract_asin(url: str):
-    try:
-        parsed = urlsplit(url)
-    except Exception:
-        return None
-
-    host = (parsed.hostname or "").lower()
-    if "amazon." not in host:
-        return None
-
-    m = ASIN_RE.search(parsed.path)
-    return m.group(1).upper() if m else None
-
-
 def _shortener_host():
+    """Optional legacy host, used only to expand links in old posts."""
     try:
         return (urlsplit(os.getenv("EGYPT_SHORT_BASE_URL", "").strip()).hostname or "").lower()
     except Exception:
         return ""
 
 
-def _resolve_one_hop(url: str):
-    headers = {"User-Agent": "Mozilla/5.0"}
-
+def _resolve_amazon_url(url: str) -> str | None:
+    """Expand existing short URLs, never create a shortened URL."""
     try:
-        r = requests.head(url, allow_redirects=False, timeout=12, headers=headers)
-        loc = r.headers.get("Location")
-        if loc:
-            return loc
-    except Exception as exc:
-        print(f"[links] HEAD failed: {type(exc).__name__}: {exc}")
-
-    try:
-        r = requests.get(url, allow_redirects=False, timeout=12, headers=headers)
-        loc = r.headers.get("Location")
-        if loc:
-            return loc
-    except Exception as exc:
-        print(f"[links] GET failed: {type(exc).__name__}: {exc}")
-
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme not in ("http", "https"):
+            return None
+        if host in AMAZON_HOSTS:
+            return url
+        legacy_host = _shortener_host()
+        if host not in AMAZON_SHORT_HOSTS and (not legacy_host or host != legacy_host):
+            return None
+        response = requests.get(url, timeout=15, allow_redirects=True,
+                                headers={"User-Agent": "Mozilla/5.0"}, stream=True)
+        try:
+            final = response.url
+        finally:
+            response.close()
+        if (urlsplit(final).hostname or "").lower() in AMAZON_HOSTS:
+            return final
+    except requests.RequestException as exc:
+        print(f"[links] Could not expand existing link: {type(exc).__name__}: {exc}")
     return None
 
 
 def rewrite_one_url(url: str) -> str:
-    raw = url.replace("&amp;", "&").strip()
-    candidate = raw
-    asin = _extract_asin(candidate)
-
-    if not asin:
-        short_host = _shortener_host()
-        try:
-            host = (urlsplit(candidate).hostname or "").lower()
-        except Exception:
-            host = ""
-
-        if short_host and host == short_host:
-            resolved = _resolve_one_hop(candidate)
-            if resolved:
-                candidate = resolved
-                asin = _extract_asin(candidate)
-
-    if not asin:
-        return url
-
-    full_fb_url = _amazon_product_link(asin, FACEBOOK_AMAZON_TAG)
-    new_short = request_short_url(full_fb_url)
-
-    if new_short != full_fb_url:
-        print(f"[links] {asin}: created new Facebook short link")
-    else:
-        print(f"[links] {asin}: shortener fallback to full URL")
-
-    return new_short
+    original = url
+    candidate = html.unescape(url.strip())
+    expanded = _resolve_amazon_url(candidate)
+    if not expanded:
+        return original
+    parsed = urlsplit(expanded)
+    if (parsed.hostname or "").lower() not in AMAZON_HOSTS:
+        return original
+    # Preserve original product link and all its parameters except tag.
+    params = parse_qsl(parsed.query, keep_blank_values=True)
+    params = [(key, value) for key, value in params if key.lower() != "tag"]
+    params.append(("tag", FACEBOOK_AMAZON_TAG))
+    result = urlunsplit((parsed.scheme, parsed.netloc, parsed.path,
+                         urlencode(params), parsed.fragment))
+    print("[links] Amazon Egypt tag replaced; direct URL (no shortening)")
+    return result
 
 
 def rewrite_amazon_links_in_text(text: str) -> str:
@@ -329,7 +286,7 @@ async def main():
 
     source = normalize_source(TELEGRAM_SOURCE)
 
-    print("[startup] Melook Make Forwarder v4 - webhook mode")
+    print("[startup] Melook Make Forwarder v5 - direct Amazon links (no shortening)")
     print(f"[startup] Telegram source: @{source}")
     print(f"[startup] Make webhook configured: {bool(MAKE_WEBHOOK_URL)}")
     print(f"[startup] Rewrite Amazon links: {REWRITE_AMAZON_LINKS}")
